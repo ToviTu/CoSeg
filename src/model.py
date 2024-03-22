@@ -3,6 +3,7 @@ from torch import nn
 from transformers import CLIPProcessor, CLIPModel
 import numpy as np
 
+
 class AutoSegDecoder(nn.Module):
 
     def __init__(self):
@@ -10,7 +11,7 @@ class AutoSegDecoder(nn.Module):
 
         self.decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(d_model=512, nhead=8, batch_first=True),
-            num_layers=6
+            num_layers=6,
         )
 
         self.label_head = nn.Sequential(
@@ -20,7 +21,7 @@ class AutoSegDecoder(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(2048, 5096),
             nn.LeakyReLU(),
-            nn.Linear(5096, 512)
+            nn.Linear(5096, 512),
         )
 
         self.pixel_head = nn.Sequential(
@@ -30,18 +31,22 @@ class AutoSegDecoder(nn.Module):
             nn.LeakyReLU(),
             nn.Linear(2048, 5096),
             nn.LeakyReLU(),
-            nn.Linear(5096, 224 * 224)
+            nn.Linear(5096, 224 * 224),
         )
-        
+
     def create_causal_mask(self, size):
-        return torch.triu(torch.full((size, size), float('-inf')), diagonal=1).to(0)
-    
+        return torch.triu(torch.full((size, size), float("-inf")), diagonal=1).to(0)
+
     def sum_batch_entity_embeddings(self, batch_embeddings, batch_labels):
-        output_seq_length = torch.max(batch_labels+1)
+        output_seq_length = torch.max(batch_labels + 1)
 
         def sum_entity_embeddings_torch(embeddings, labels):
-            unique_labels, inverse_indices = torch.unique_consecutive(labels, return_inverse=True)
-            summed_embeddings = torch.zeros((output_seq_length, embeddings.size(1)), device=embeddings.device)
+            unique_labels, inverse_indices = torch.unique_consecutive(
+                labels, return_inverse=True
+            )
+            summed_embeddings = torch.zeros(
+                (output_seq_length, embeddings.size(1)), device=embeddings.device
+            )
             for i, idx in enumerate(inverse_indices.unique()):
                 summed_embeddings[i] = embeddings[inverse_indices == idx].sum(dim=0)
             return summed_embeddings
@@ -52,7 +57,7 @@ class AutoSegDecoder(nn.Module):
             batch_summed_embeddings.append(summed_embeddings)
 
         return torch.stack(batch_summed_embeddings)
-    
+
     def forward(self, vk_seq, q_seq, token_summary_idx=None):
 
         # Query: text tokens
@@ -60,14 +65,16 @@ class AutoSegDecoder(nn.Module):
         transformer_output = self.decoder(
             q_seq,
             vk_seq,
-            tgt_mask = self.create_causal_mask(q_seq.shape[1]),
+            tgt_mask=self.create_causal_mask(q_seq.shape[1]),
         )
 
         label_logit = self.label_head(transformer_output)
 
         # Pool tokens correspond to the same entity for mask generation
         if token_summary_idx is not None:
-            pooled_hidden_state = self.sum_batch_entity_embeddings(transformer_output, token_summary_idx)
+            pooled_hidden_state = self.sum_batch_entity_embeddings(
+                transformer_output, token_summary_idx
+            )
         else:
             pooled_hidden_state = transformer_output
 
@@ -85,7 +92,7 @@ class AutoSeg(nn.Module):
         clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
         self.vision_encoder = clip.vision_model
         self.text_encoder = clip.text_model
-        
+
         # To Implement
         # FiLM conditional nomenclature
         # Short cut connection ?
@@ -112,14 +119,14 @@ class AutoSeg(nn.Module):
         self.text_feature_projection = clip.text_projection
 
         for module in [
-            self.vision_encoder, 
-            self.text_encoder, 
-            self.image_feature_projection, 
-            self.text_feature_projection
+            self.vision_encoder,
+            self.text_encoder,
+            self.image_feature_projection,
+            self.text_feature_projection,
         ]:
             for param in module.parameters():
                 param.requires_grad = False
-        
+
         self.autoseg_decoder = AutoSegDecoder()
 
         # Prediction Head Check MaskFormer architecture
@@ -134,26 +141,29 @@ class AutoSeg(nn.Module):
         text_hidden_state = self.text_encoder(input_ids=input_ids).last_hidden_state
         projected_text_hidden_state = self.text_feature_projection(text_hidden_state)
         return projected_text_hidden_state
-    
-    def forward(self, pixel_values, input_ids, new_image=True, token_summary_idx=None, **kargs):
+
+    def forward(
+        self, pixel_values, input_ids, new_image=True, token_summary_idx=None, **kargs
+    ):
 
         # Process image
         if new_image or self.image_conditional is None:
-            image_hidden_state = self.vision_encoder(pixel_values=pixel_values).last_hidden_state
+            image_hidden_state = self.vision_encoder(
+                pixel_values=pixel_values
+            ).last_hidden_state
             # Save the projected image hidden states for future prediction
             self.image_conditional = self.image_feature_projection(image_hidden_state)
 
         # Process text
         projected_text_hidden_state = self.project_to_clip_space(input_ids)
-        
+
         # Decode
         masks, label_logit = self.autoseg_decoder(
-            self.image_conditional,
-            projected_text_hidden_state,
-            token_summary_idx
+            self.image_conditional, projected_text_hidden_state, token_summary_idx
         )
 
         return masks, label_logit
+
 
 def sequence_contrastive_loss(seq1_features, seq2_features, temperature=0.07):
     """
@@ -180,14 +190,9 @@ def sequence_contrastive_loss(seq1_features, seq2_features, temperature=0.07):
     similarity = torch.matmul(seq1_features_flat, seq2_features_flat.T) / temperature
 
     # Create labels
-    labels = torch.arange(N*L).to(similarity.device)
+    labels = torch.arange(N * L).to(similarity.device)
 
     # Compute the loss
     loss = nn.functional.cross_entropy(similarity, labels)
 
-    return loss        
-        
-
-
-
-
+    return loss
