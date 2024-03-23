@@ -14,20 +14,11 @@ DIR="../../datasets"
 
 # Cityscapes datasets
 # cityscapes login info
-# email: ben.j.mueller@wustl.edu
-# username: BenMueller
-# password: CityScapes12345#  (try cityscapes12345 if that doesn't work)
-
-# note: if this is breaking, it might be because of the need for a login
-    # if this is the case, need to download the file locally to your machine from the website
-    # and then transfer them to the server / compute that you're using
-# curl -o "$DIR/Cityscapes_gtFine.zip" "https://www.cityscapes-dataset.com/file-handling/?packageID=1"
+# ask Ben for login info
+    # might be hard to download through curl bc of login, so if we want this one need to download locally and transfer to server
 
 # ADE20K dataset
-# ADE20k login
-# username & displayname: BenMueller
-# pass: ADE20k12345#
-# email: ben.j.mueller@wustl.edu
+# ask Ben for login info
 
 # Pascal Context (2010) dataset
 curl -o "$DIR/VOCtrainval_03-May-2010.tar" "http://host.robots.ox.ac.uk/pascal/VOC/voc2010/VOCtrainval_03-May-2010.tar"
