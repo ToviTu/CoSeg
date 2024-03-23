@@ -1,6 +1,6 @@
 from src.model import AutoSeg
 from src.model import sequence_contrastive_loss
-from src.dataset import COCOStuffDataset, collate_fn_factory
+from src.test_dataset import PascalVOCDataset, collate_fn_factory
 from torch.utils.data import DataLoader
 from transformers import CLIPProcessor, CLIPModel
 from torch.optim import Adam
@@ -9,14 +9,20 @@ import tqdm
 
 
 # Define dataset dir
+# change to the path of the VOC2012 dataset
 dataset_dir = "../datasets/VOC2012/VOCdevkit/VOC2012/"
 image_dir = "JPEGImages/"
-annotation_dir = "Annotations/"
+label_file_path = "src/test_labels.txt"
+data_file_path = "ImageSets/Segmentation/val.txt"
+annotation_dir = "SegmentationClass/"
+
 
 # Create dataset object
-data = COCOStuffDataset(
+data = PascalVOCDataset(
     dataset_dir + image_dir,
     dataset_dir + annotation_dir,
+    label_file_path,
+    dataset_dir + data_file_path,
 )
 
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")

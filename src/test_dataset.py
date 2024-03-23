@@ -6,23 +6,29 @@ import torchvision.transforms.functional as TF
 import os
 import numpy as np
 
-dataset_dir = "../datasets/VOC2012/"
-image_dir = "JPEGImages/"
-annotation_dir = "Annotations/"
 
-
-class PascalVOC(Dataset):
-    def __init__(self, image_dir, annotation_dir, img_size=224):
+class PascalVOCDataset(Dataset):
+    def __init__(
+        self, image_dir, annotation_dir, label_file_path, data_file_path, img_size=224
+    ):
         """
         Args:
             image_dir (string): Directory with all the images.
             annotation_dir (string): Directory with all the annotations.
+            label_file_path (string): Directory with all the labels.
+            data_file_path (string): File containing the filename for the validation images.
             transform (callable, optional): Optional transform to be applied on a sample.
         """
         self.image_dir = image_dir
         self.annotation_dir = annotation_dir
+        self.label_file_path = label_file_path
+        self.data_file = data_file_path
         self.images = os.listdir(image_dir)
         self.img_size = 224
+
+        with open(data_file_path, "r") as f:
+            self.valid_files = [line.strip() + ".jpg" for line in f.readlines()]
+        self.images = [img for img in os.listdir(image_dir) if img in self.valid_files]
 
     def center_crop(self, image, mask):
         transform = transforms.CenterCrop(self.img_size)
@@ -44,7 +50,7 @@ class PascalVOC(Dataset):
 
         # Load the label mapping
         digit_to_object_mapping = {}
-        with open("src/labels.txt", "r") as file:
+        with open(self.label_file_path, "r") as file:
             for line in file:
                 key, value = line.strip().split(":")
                 digit_to_object_mapping[int(key)] = value.strip()
@@ -63,3 +69,65 @@ class PascalVOC(Dataset):
         sample = {"image": image, "annotation": nonempty_masks, "labels": labels}
 
         return sample
+
+
+def collate_fn_factory(processor):
+
+    def collate_fn(batch):
+        size = processor.image_processor.size["shortest_edge"]
+        transform = transforms.ToTensor()
+
+        # Preprocess pixel values
+        images = [each["image"] for each in batch]
+        batch_pixel_values = processor(None, images=images, return_tensors="pt")[
+            "pixel_values"
+        ]
+
+        # Preprocess texts
+        batch_input_ids = processor(
+            [" ".join(entry["labels"]) for entry in batch],
+            padding=True,
+            return_tensors="pt",
+        )["input_ids"]
+
+        # Preprocess masks
+        max_size = batch_input_ids.shape[1]
+        batch_masks = np.stack(
+            [
+                np.stack(
+                    [np.zeros((size, size))]
+                    + each["annotation"]
+                    + [np.zeros((size, size))]
+                    * (max_size - len(each["annotation"]) - 1)
+                )
+                for each in batch
+            ]
+        )
+        batch_masks = torch.tensor(batch_masks)
+
+        # Create token summary ids
+        batch_seq = [
+            processor(each["labels"], None, add_special_tokens=False)["input_ids"]
+            for each in batch
+        ]
+        batch_token_summary = []
+        for each in batch_seq:
+            token_summary = [0]
+            for i in range(len(each)):
+                token_summary += [i + 1] * len(each[i])
+            token_summary += list(
+                range(
+                    token_summary[-1] + 1,
+                    token_summary[-1] + 1 + max_size - len(token_summary),
+                )
+            )
+            batch_token_summary.append(token_summary)
+
+        return {
+            "pixel_values": batch_pixel_values,
+            "masks": batch_masks.type(torch.float32),
+            "input_ids": batch_input_ids,
+            "token_summary_idx": torch.tensor(batch_token_summary),
+        }
+
+    return collate_fn
