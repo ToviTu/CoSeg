@@ -10,6 +10,7 @@ dataset_dir = "/scratch/t.tovi/datasets/"
 image_dir = "COCO_stuff_images/train2017/"
 annotation_dir = "COCO_stuff_annotations/train2017/"
 
+# TODO make sure that this dataloader output is the SAME FORMAT as the one that Tovi wrote
 
 class COCOStuffDataset(Dataset):
     def __init__(self, image_dir, annotation_dir, img_size=224):
