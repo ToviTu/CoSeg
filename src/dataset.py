@@ -6,6 +6,7 @@ import torchvision.transforms.functional as TF
 import os
 import numpy as np
 
+src_dir = "/home/research/jianhong.t/OpenVocab_Seg_with_AutoRegres/src/"
 dataset_dir = "/scratch/t.tovi/datasets/"
 image_dir = "COCO_stuff_images/train2017/"
 annotation_dir = "COCO_stuff_annotations/train2017/"
@@ -26,6 +27,16 @@ class COCOStuffDataset(Dataset):
     def center_crop(self, image, mask):
         transform = transforms.CenterCrop(self.img_size)
         return transform(image), transform(mask)
+    
+    def resize(self, image, mask):
+        transform = transforms.CenterCrop(min(image.size[1:]))
+
+        cropped_image = transform(image)
+        cropped_mask = transform(mask)
+
+        resized_image = transforms.Resize((self.img_size, self.img_size),transforms.InterpolationMode.BILINEAR)(image)
+        resized_mask= transforms.Resize((self.img_size, self.img_size), transforms.InterpolationMode.NEAREST)(mask)
+        return resized_image, resized_mask
 
     def __len__(self):
         return len(self.images)
@@ -41,13 +52,14 @@ class COCOStuffDataset(Dataset):
 
         # Load the label mapping
         digit_to_object_mapping = {}
-        with open('src/labels.txt', 'r') as file:
+        with open(f'{src_dir}labels.txt', 'r') as file:
             for line in file:
                 key, value = line.strip().split(':')
                 digit_to_object_mapping[int(key)] = value.strip()
         digit_to_object_mapping[255] = "unlabled"
 
-        image, mask = self.center_crop(image, annotation)
+        image, mask = self.resize(image, annotation)
+        #image, mask = self.center_crop(image, annotation)
         mask = np.array(mask)
 
         # Get ids and labels
@@ -64,7 +76,7 @@ class COCOStuffDataset(Dataset):
 def collate_fn_factory(processor):
 
     def collate_fn(batch):
-        size = processor.image_processor.size['shortest_edge']
+        size = processor.image_processor.size['shortest_edge'] #224
         transform = transforms.ToTensor()
 
         # Preprocess pixel values

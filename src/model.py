@@ -2,90 +2,127 @@ import torch
 from torch import nn
 from transformers import CLIPProcessor, CLIPModel
 import numpy as np
+import torch.nn.functional as F
 
-class AutoSegDecoder(nn.Module):
+class CLIPLang(nn.Module):
 
-    def __init__(self):
+    '''
+    This class is for detecting most salient object
+    in the scene as an auto-regressive task
+    '''
+
+    def __init__(self, clip_encoders=None):
         super().__init__()
 
-        self.decoder = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d_model=512, nhead=8, batch_first=True),
-            num_layers=6
-        )
+        CLIP = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") \
+            if clip_encoders is None else clip_encoders
 
-        self.label_head = nn.Sequential(
-            nn.Linear(512, 1024),
-            nn.LeakyReLU(),
-            nn.Linear(1024, 2048),
-            nn.LeakyReLU(),
-            nn.Linear(2048, 5096),
-            nn.LeakyReLU(),
-            nn.Linear(5096, 512)
-        )
+        # vision model
+        self.vision_encoder = CLIP.vision_model
+        self.vision_projector = CLIP.visual_projection
 
-        self.pixel_head = nn.Sequential(
-            nn.Linear(512, 1024),
-            nn.LeakyReLU(),
-            nn.Linear(1024, 2048),
-            nn.LeakyReLU(),
-            nn.Linear(2048, 5096),
-            nn.LeakyReLU(),
-            nn.Linear(5096, 224 * 224)
+        # text model
+        self.embeddings = CLIP.text_model.embeddings
+        self.text_encoder = CLIP.text_model.encoder
+        self.text_projector = CLIP.text_projection
+
+        # transformer for next label prediction
+        self.decoder = nn.Transformer(
+            d_model = 512,
+            nhead = 8,
+            num_encoder_layers = 6,
+            num_decoder_layers = 6,
+            activation = nn.GELU(),
+            batch_first = True
         )
-        
-    def create_causal_mask(self, size):
-        return torch.triu(torch.full((size, size), float('-inf')), diagonal=1).to(0)
+        self.label_head = nn.Linear(512, 512)
+
+        self.EOS_EMBEDDING = self.embeddings(torch.tensor([49407]))[0, 0, :]
     
     def sum_batch_entity_embeddings(self, batch_embeddings, batch_labels):
         output_seq_length = torch.max(batch_labels+1)
+        summed_embeddings = torch.zeros((
+            batch_embeddings.shape[0],
+            output_seq_length,
+            batch_embeddings.shape[-1]
+        )).to(batch_embeddings.device)
+        for i in range(batch_embeddings.shape[0]):
+            for j in range(batch_embeddings.shape[1]):
+                summed_embeddings[i, batch_labels[i, j]] += batch_embeddings[i, j]
 
-        def sum_entity_embeddings_torch(embeddings, labels):
-            unique_labels, inverse_indices = torch.unique_consecutive(labels, return_inverse=True)
-            summed_embeddings = torch.zeros((output_seq_length, embeddings.size(1)), device=embeddings.device)
-            for i, idx in enumerate(inverse_indices.unique()):
-                summed_embeddings[i] = embeddings[inverse_indices == idx].sum(dim=0)
-            return summed_embeddings
-
-        batch_summed_embeddings = []
-        for embeddings, labels in zip(batch_embeddings, batch_labels):
-            summed_embeddings = sum_entity_embeddings_torch(embeddings, labels)
-            batch_summed_embeddings.append(summed_embeddings)
-
-        return torch.stack(batch_summed_embeddings)
+            for k in range(torch.max(batch_labels[i]), output_seq_length):
+                assert torch.zeros((1,2)).sum() == 0, "Error in summing embeddings"
+                summed_embeddings[i, k] += self.EOS_EMBEDDING.to(batch_embeddings.device)
+        summed_embeddings = summed_embeddings.detach()
+        return summed_embeddings
+                
+    def to_embedding(self, input_ids, token_summary_idx=None):
+        word_embeddings = self.embeddings(input_ids)
+        summarized_word_embeddings = self.sum_batch_entity_embeddings(word_embeddings, token_summary_idx) \
+            if token_summary_idx is not None else word_embeddings
+        return summarized_word_embeddings
     
-    def forward(self, vk_seq, q_seq, token_summary_idx=None):
+    def visual_forward(self, pixel_values):
 
-        # Query: text tokens
-        # Key & Value: image tokens
-        transformer_output = self.decoder(
-            q_seq,
-            vk_seq,
-            tgt_mask = self.create_causal_mask(q_seq.shape[1]),
+        self.visual_embeddings = self.vision_encoder(pixel_values).last_hidden_state
+
+        # Map image patches to text embeddings
+        return self.vision_projector(self.visual_embeddings)
+
+    def lang_forward(self, img_src, txt_tgt):
+        # Send image seq and text seq to lang model
+        return self.label_head(self.decoder(
+            img_src,
+            txt_tgt,
+            tgt_mask=self.decoder.generate_square_subsequent_mask(
+                txt_tgt.shape[1],
+                device=txt_tgt.device,
+            )
+        ))
+
+    def forward(self, pixel_values, text_values, token_summary_idx=None):    
+
+        # Get visual features
+        visual_features = self.visual_forward(pixel_values)
+
+        # Lang Model
+        return self.lang_forward(visual_features, text_values)
+
+class AutoSegDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.decoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=768,
+                nhead=8,
+                dim_feedforward=2048,
+                dropout=0.1,
+                activation=nn.GELU(),
+                batch_first=True,
+            ),
+            num_layers=6,
         )
 
-        label_logit = self.label_head(transformer_output)
-
-        # Pool tokens correspond to the same entity for mask generation
-        if token_summary_idx is not None:
-            pooled_hidden_state = self.sum_batch_entity_embeddings(transformer_output, token_summary_idx)
-        else:
-            pooled_hidden_state = transformer_output
-
-        masks = self.pixel_head(pooled_hidden_state).reshape(
-            pooled_hidden_state.shape[:-1] + (224, 224)
+        self.mask_head = nn.ConvTranspose2d(
+            in_channels=768,
+            out_channels=1,
+            kernel_size=7,
+            stride=7,
         )
 
-        return masks, label_logit
+    def forward(self, image_features):
+        features = self.decoder(image_features)[:,1:,:]
+        features = features.view(features.shape[0], features.shape[-1], 7, 7)
+        output = self.mask_head(features)
+        return F.interpolate(output, size=(224, 224), mode='bilinear')
 
 
 class AutoSeg(nn.Module):
 
-    def __init__(self, freeze_clip=True):
+    def __init__(self):
         super().__init__()
-        clip = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-        self.vision_encoder = clip.vision_model
-        self.text_encoder = clip.text_model
-        
+
         # To Implement
         # FiLM conditional nomenclature
         # Short cut connection ?
@@ -108,17 +145,10 @@ class AutoSeg(nn.Module):
         #     nn.Linear(768, 512)
         # )# MLP may be preferable
 
-        self.image_feature_projection = clip.visual_projection
-        self.text_feature_projection = clip.text_projection
+        self.encoders = CLIPLang()
 
-        for module in [
-            self.vision_encoder, 
-            self.text_encoder, 
-            self.image_feature_projection, 
-            self.text_feature_projection
-        ]:
-            for param in module.parameters():
-                param.requires_grad = False
+        self.film_mul = nn.Linear(512, 768)
+        self.film_add = nn.Linear(512, 768)
         
         self.autoseg_decoder = AutoSegDecoder()
 
@@ -130,30 +160,31 @@ class AutoSeg(nn.Module):
         # <bos> A photo of cat sofa {label}
         # <bos> A photo of cat sofa <eos>
 
-    def project_to_clip_space(self, input_ids):
-        text_hidden_state = self.text_encoder(input_ids=input_ids).last_hidden_state
-        projected_text_hidden_state = self.text_feature_projection(text_hidden_state)
-        return projected_text_hidden_state
-    
-    def forward(self, pixel_values, input_ids, new_image=True, token_summary_idx=None, **kargs):
+    def visual_forward(self, pixel_values):
+        self.encoders(pixel_values)
+        return self.encoders.visual_embeddings
 
-        # Process image
-        if new_image or self.image_conditional is None:
-            image_hidden_state = self.vision_encoder(pixel_values=pixel_values).last_hidden_state
-            # Save the projected image hidden states for future prediction
-            self.image_conditional = self.image_feature_projection(image_hidden_state)
-
-        # Process text
-        projected_text_hidden_state = self.project_to_clip_space(input_ids)
+    def forward(self, pixel_values, text_values, **kargs):        
         
-        # Decode
-        masks, label_logit = self.autoseg_decoder(
-            self.image_conditional,
-            projected_text_hidden_state,
-            token_summary_idx
-        )
+        # Get text embeddings
+        lang_output = self.encoders(pixel_values, text_values)
 
-        return masks, label_logit
+        # Get image embeddings
+        img_output = self.encoders.visual_embeddings
+
+        mask_outputs = []
+        for batch_embeddings in lang_output.permute(1, 0, 2):
+            conditioned_img = self.film_mul(batch_embeddings).unsqueeze(1) * img_output +\
+                 self.film_add(batch_embeddings).unsqueeze(1)
+                
+            batch_masks = self.autoseg_decoder(conditioned_img)
+            mask_outputs.append(batch_masks)
+        mask_outputs = torch.cat(mask_outputs, dim=1)
+
+
+
+        return mask_outputs, lang_output
+        
 
 def sequence_contrastive_loss(seq1_features, seq2_features, temperature=0.07):
     """
