@@ -7,6 +7,14 @@ from torch import nn
 import torch
 import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from transformers import CLIPProcessor, CLIPModel, CLIPTextModelWithProjection, CLIPVisionModelWithProjection
+import torch.nn.functional as F
+from torch.utils.data import Dataset
+from PIL import Image
+from torchvision import transforms
+import torchvision.transforms.functional as TF
+import os
+import numpy as np
 
 device = 0
 
@@ -34,69 +42,76 @@ m = nn.Sigmoid()
 model.to(device)
 model.requires_grad_(False)
 
-# Unfreeze decoders
-model.encoders.decoder.requires_grad_(True)
-model.film_mul.requires_grad_(True)
-model.film_add.requires_grad_(True)
-model.autoseg_decoder.requires_grad_(True)
+# # Unfreeze decoders
+encoder_params = [
+    model.encoders.decoder,
+    model.encoders.label_head,
+]
 
+decoder_params = [
+    model.reduces,
+    model.film_mul,
+    model.film_add,
+    model.decoder,
+    model.mask_head
+]
+
+for param in encoder_params + decoder_params:
+    param.requires_grad_(True)
 
 # Define training parameters
-lr_max = 1e-5
-lr_min = 1e-8
-alpha = 0.01
-num_epochs = 1
+lr_encoder = 1e-4
+lr_decoer = 1e-3
+alpha = 0.08
+num_epochs = 5
 
 # Optimizer
 optim = Adam(
     [
-        {'params': model.encoders.decoder.parameters()},
-        {'params': model.film_mul.parameters()},
-        {'params': model.film_add.parameters()},
-        {'params': model.autoseg_decoder.parameters()}
-    ],
-    lr = lr_max
+        {'params': param.parameters(), "lr" : lr_encoder}
+        for param in encoder_params
+    ] +\
+    [
+        {'params': param.parameters(), "lr" : lr_decoer}
+        for param in decoder_params
+    ]
 )
-#scheduler = CosineAnnealingLR(optim, T_max=200, eta_min=lr_min)
 
-# Loss 
-loss_1 = sequence_contrastive_loss
-loss_2 = nn.BCELoss()
+# Loss
+SC = sequence_contrastive_loss
+BCE = nn.BCELoss()
+CE = nn.CrossEntropyLoss()
 
 count = 0
 for _ in range(num_epochs):
-    for batch in tqdm.tqdm(data_loader):
+    for batch in data_loader:
         # Prepare data
         pixel_values = batch['pixel_values'].to(device)
         masks = batch['masks'].to(device)
         input_ids = batch['input_ids'].to(device)
         token_summary_idx = batch['token_summary_idx'].to(device)
 
-        # Get text embeddings
-        text_embeddings = model.encoders.to_embedding(input_ids, token_summary_idx)
-        text_embeddings = text_embeddings.detach()
+        # Prepare input and output
 
-        # Shift the sequence
-        input_embeddings = text_embeddings[:, :-1]
-        target_embeddings = text_embeddings[:, 1:]
+        input = input_ids[:, :-1]
+        target = input_ids[:, 1:]
 
-        pred_masks, pred_embeddings = model(pixel_values, input_embeddings)
+        mask_logits, label_logits = model(pixel_values, input, token_summary_idx)
 
         # Compute loss
-        l1 = loss_1(pred_embeddings, target_embeddings)
-        l2 = loss_2(m(pred_masks), masks[:,1:1+input_embeddings.shape[1],:,:])
+        l1 = BCE(m(mask_logits), masks[:, 1:])
+        l2 = alpha * CE(label_logits.permute(0, 2, 1), target)
+        loss = l1 + l2
 
-        loss = alpha * l1 + (1 - alpha) * l2
-            
         loss.backward()
         optim.step()
         optim.zero_grad()
 
         if count % 100 == 0:
-            print(f"Last batch loss: {loss.detach().cpu().item()}")
-            print(f"Last batch loss1: {l1.detach().cpu().item()}")
-            print(f"Last batch loss2: {l2.detach().cpu().item()}")
-            #scheduler.step()
+            print(f"Last batch loss: {loss.detach().cpu().item()}, {l1.detach().cpu().item()}, {l2.detach().cpu().item()}")
         count += 1
+
+        # if count % -1 == 0:
+        #     break
     print("One training epoch done")
-    torch.save(model.state_dict(), "/scratch/t.tovi/models/autoseg_v0.1")
+    torch.save(model.state_dict(), "/scratch/t.tovi/autoseg_v0.1")
