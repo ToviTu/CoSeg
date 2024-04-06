@@ -29,7 +29,7 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 collate_fn = collate_fn_factory(processor)
 
-data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=2)
+data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=0)
 
 for batch in tqdm.tqdm(data_loader):
     print(batch)
