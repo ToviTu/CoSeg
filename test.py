@@ -33,3 +33,47 @@ data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers
 
 for batch in tqdm.tqdm(data_loader):
     print(batch)
+
+
+def mean_iou(true_labels, pred_labels, num_classes):
+    """
+    Calculate the mean Intersection over Union (mIoU) score.
+
+    :param true_labels: array of shape (N, H, W), true labels
+    :param pred_labels: array of shape (N, H, W), predicted labels
+    :param num_classes: integer, number of classes
+    :return: float, mean IoU score
+    """
+    iou_list = []
+    for cls in range(num_classes):
+        true_positive = ((pred_labels == cls) & (true_labels == cls)).sum()
+        false_positive = ((pred_labels == cls) & (true_labels != cls)).sum()
+        false_negative = ((pred_labels != cls) & (true_labels == cls)).sum()
+        intersection = true_positive
+        union = true_positive + false_positive + false_negative
+        if union == 0:
+            iou = float("nan")
+        else:
+            iou = intersection / union
+        iou_list.append(iou)
+
+    iou_list = [x for x in iou_list if not math.isnan(x)]
+
+    # Compute the mean IoU across all classes
+    mIoU = sum(iou_list) / len(iou_list)
+    return mIoU
+
+
+def harmonic_mean_iou(mIoU_seen, mIoU_unseen):
+    """
+    Calculate the harmonic mean of the mean IoU (Intersection over Union) for seen and unseen classes.
+
+    :param mIoU_seen: float, mean IoU for seen classes
+    :param mIoU_unseen: float, mean IoU for unseen classes
+    :return: float, harmonic mean IoU
+    """
+    # Ensure both mIoU_seen and mIoU_unseen are non-zero to avoid division by zero.
+    if mIoU_seen > 0 and mIoU_unseen > 0:
+        return (2 * mIoU_seen * mIoU_unseen) / (mIoU_seen + mIoU_unseen)
+    else:
+        return 0

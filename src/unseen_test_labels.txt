@@ -1,0 +1,10 @@
+0: unlabeled
+1: aeroplane
+13: horse
+14: motorbike
+15: person
+16: potted plant
+17: sheep
+18: sofa
+19: train
+20: tv/monitor
