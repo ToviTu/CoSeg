@@ -7,6 +7,7 @@ from torch.optim import Adam
 from torch import nn
 import tqdm
 
+device = 0
 
 # Define dataset dir
 # change to the path of the VOC2012 dataset
@@ -31,8 +32,33 @@ collate_fn = collate_fn_factory(processor)
 
 data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=0)
 
+# Step 2: Define the model architecture
+model = AutoSeg()
+model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_v0.1"))
+model.eval()
+
 for batch in tqdm.tqdm(data_loader):
-    print(batch)
+    pixel_values = batch["pixel_values"].to(device)
+    masks = batch["masks"].to(device)
+    input_ids = batch["input_ids"].to(device)
+    token_summary_idx = batch["token_summary_idx"].to(device)
+
+    source_ids = input_ids[:, :-1]
+    token_summary_idx = token_summary_idx[:, :-1]
+
+    target_labels = model.text_encoder.embeddings(input_ids[:, 1:])
+    target_masks = masks[:, 1:]
+
+    output_masks, output_labels = model(
+        pixel_values, source_ids, token_summary_idx=token_summary_idx
+    )
+
+    print(output_masks.shape)
+    print(target_masks.shape)
+
+    mean_iou_score = mean_iou(target_masks, output_masks, num_classes=21)
+
+    print(f"Mean IoU: {mean_iou_score}")
 
 
 def mean_iou(true_labels, pred_labels, num_classes):
