@@ -5,60 +5,34 @@ from torch.utils.data import DataLoader
 from transformers import CLIPProcessor, CLIPModel
 from torch.optim import Adam
 from torch import nn
+import torch
 import tqdm
+import math
 
-device = 0
-
-# Define dataset dir
-# change to the path of the VOC2012 dataset
-dataset_dir = "../datasets/VOC2012/VOCdevkit/VOC2012/"
-image_dir = "JPEGImages/"
-label_file_path = "src/test_labels.txt"
-data_file_path = "ImageSets/Segmentation/val.txt"
-annotation_dir = "SegmentationClass/"
-
-
-# Create dataset object
-data = PascalVOCDataset(
-    dataset_dir + image_dir,
-    dataset_dir + annotation_dir,
-    label_file_path,
-    dataset_dir + data_file_path,
-)
-
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-collate_fn = collate_fn_factory(processor)
-
-data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=0)
-
-# Step 2: Define the model architecture
-model = AutoSeg()
-model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_v0.1"))
-model.eval()
-
-for batch in tqdm.tqdm(data_loader):
-    pixel_values = batch["pixel_values"].to(device)
-    masks = batch["masks"].to(device)
-    input_ids = batch["input_ids"].to(device)
-    token_summary_idx = batch["token_summary_idx"].to(device)
-
-    source_ids = input_ids[:, :-1]
-    token_summary_idx = token_summary_idx[:, :-1]
-
-    target_labels = model.text_encoder.embeddings(input_ids[:, 1:])
-    target_masks = masks[:, 1:]
-
-    output_masks, output_labels = model(
-        pixel_values, source_ids, token_summary_idx=token_summary_idx
-    )
-
-    print(output_masks.shape)
-    print(target_masks.shape)
-
-    mean_iou_score = mean_iou(target_masks, output_masks, num_classes=21)
-
-    print(f"Mean IoU: {mean_iou_score}")
+# labels - index dict
+labels = [
+    "unlabeled",
+    "aeroplane",
+    "bicycle",
+    "bird",
+    "boat",
+    "bottle",
+    "bus",
+    "car",
+    "cat",
+    "chair",
+    "cow",
+    "diningtable",
+    "dog",
+    "horse",
+    "motorbike",
+    "person",
+    "potted plant",
+    "sheep",
+    "sofa",
+    "train",
+    "tv/monitor",
+]
 
 
 def mean_iou(true_labels, pred_labels, num_classes):
@@ -103,3 +77,69 @@ def harmonic_mean_iou(mIoU_seen, mIoU_unseen):
         return (2 * mIoU_seen * mIoU_unseen) / (mIoU_seen + mIoU_unseen)
     else:
         return 0
+    
+def binary_masks_to_label_mask(binary_masks, output_labels):
+    N, L, W, H = binary_masks.shape
+    label_masks = torch.zeros((N, W, H), dtype=torch.int64)
+
+    for i, label in enumerate(labels):
+        index = output_labels.index(label)
+        label_masks[binary_masks[:, index, :, :].bool()] = i
+    
+    return label_masks
+
+device = 0
+
+# Define dataset dir
+# change to the path of the VOC2012 dataset
+dataset_dir = "datasets/VOCdevkit/VOC2012/"
+image_dir = "JPEGImages/"
+label_file_path = "src/test_labels.txt"
+data_file_path = "ImageSets/Segmentation/val.txt"
+annotation_dir = "SegmentationClass/"
+
+
+# Create dataset object
+data = PascalVOCDataset(
+    dataset_dir + image_dir,
+    dataset_dir + annotation_dir,
+    label_file_path,
+    dataset_dir + data_file_path,
+)
+
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+collate_fn = collate_fn_factory(processor)
+
+data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=0)
+
+# Step 2: Define the model architecture
+model = AutoSeg()
+model.load_state_dict(torch.load("/scratch/t.tovi/models/autoseg_v0.1"))
+model.eval()
+
+for batch in tqdm.tqdm(data_loader):
+    pixel_values = batch["pixel_values"].to(device)
+    masks = batch["masks"].to(device)
+    input_ids = batch["input_ids"].to(device)
+    token_summary_idx = batch["token_summary_idx"].to(device)
+
+    source_ids = input_ids[:, :-1]
+    token_summary_idx = token_summary_idx[:, :-1]
+
+    target_labels = model.text_encoder.embeddings(input_ids[:, 1:])
+    target_masks = masks[:, 1:]
+
+    # note: one mask for each of the labels output by the model
+    output_masks, output_labels = model(
+        pixel_values, source_ids, token_summary_idx=token_summary_idx
+    )
+
+    mixed_output_masks = binary_masks_to_label_mask(output_masks)
+    mixed_target_masks = binary_masks_to_label_mask(target_masks)
+
+    mean_iou_score = mean_iou(mixed_target_masks, mixed_output_masks, num_classes=21)
+
+    print(f"Mean IoU: {mean_iou_score}")
+
+
