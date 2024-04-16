@@ -5,7 +5,12 @@ FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 WORKDIR /app
 RUN mkdir /dataset/
 RUN mkdir /models/
-RUN apt-get -y update; apt-get -y install curl
+RUN apt-get -y update; apt-get -y install \
+    curl\
+    nano\
+    zip\
+    unzip\
+    wget\
 # Copy the dependencies file to the working directory
 COPY . .
 

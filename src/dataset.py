@@ -73,7 +73,7 @@ class COCOStuffDataset(Dataset):
 
         return sample
 
-def collate_fn_factory(processor):
+def collate_fn_factory(processor, clip_text_encoder):
 
     def collate_fn(batch):
         size = processor.image_processor.size['shortest_edge'] #224
@@ -97,16 +97,6 @@ def collate_fn_factory(processor):
             for each in batch
         ])
         batch_masks = torch.tensor(batch_masks)
-
-        # Create token summary ids
-        batch_seq = [processor(each['labels'], None, add_special_tokens=False)['input_ids'] for each in batch]
-        batch_token_summary = []
-        for each in batch_seq:
-            token_summary = [0]
-            for i in range(len(each)):
-                token_summary += [i+1] * len(each[i])
-            token_summary += list(range(token_summary[-1]+1, token_summary[-1]+1+max_size-len(token_summary)))
-            batch_token_summary.append(token_summary)
 
         return {
             "pixel_values": batch_pixel_values, 
