@@ -1,7 +1,6 @@
 from src.model import *
 from src.dataset import COCOStuffDataset, collate_fn_factory
 from torch.utils.data import DataLoader
-from transformers import CLIPProcessor, CLIPModel
 from torch.optim import Adam
 from torch import nn
 import torch

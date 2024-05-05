@@ -22,6 +22,8 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 import tqdm
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 """## Dataset"""
 
 src_dir = "/home/research/jianhong.t/OpenVocab_Seg_with_AutoRegres/src/"
@@ -303,59 +305,13 @@ def collate_fn_factory(processor, label_embeddings, max_size=20):
 
     return collate_fn
 
-"""## Define the CLIP loss"""
-
-def clip_loss(pred_features, target_features, temperature=0.07):
-    """
-    Compute the CLIP loss between image and text features.
-
-    Parameters:
-    - image_features: A tensor of shape (batch_size, feature_dim) containing the image features.
-    - text_features: A tensor of shape (batch_size, feature_dim) containing the text features.
-    - temperature: A scalar temperature parameter.
-
-    Returns:
-    - The CLIP loss.
-    """
-    # Normalize features
-    pred_features = F.normalize(pred_features, dim=-1)
-    target_features = F.normalize(target_features, dim=-1)
-
-    # Compute similarity matrix
-    similarity = torch.matmul(pred_features, target_features.T) / temperature
-
-    # Image-to-text and text-to-image loss
-    loss = F.cross_entropy(similarity, torch.arange(len(pred_features)).to(pred_features.device))
-
-    # Symmetric loss
-    return loss
-
-def anchor_clip_loss(pred_features, target_features, ground_truth, temperature=0.07):
-    """
-    Compute the CLIP loss between image and text features.
-
-    Parameters:
-    - image_features: A tensor of shape (batch_size, feature_dim) containing the image features.
-    - text_features: A tensor of shape (batch_size, feature_dim) containing the text features.
-    - temperature: A scalar temperature parameter.
-
-    Returns:
-    - The CLIP loss.
-    """
-    # Normalize features
-    pred_features = F.normalize(pred_features, dim=-1)
-    target_features = F.normalize(target_features, dim=-1)
-
-    # Compute similarity matrix
-    similarity = torch.matmul(pred_features, target_features.T) / temperature
-
-    # Image-to-text and text-to-image loss
-    loss = F.cross_entropy(similarity, torch.arange(len(pred_features)).to(pred_features.device))
-
-    # Symmetric loss
-    return loss
-
 """## Training Pipeline"""
+
+def dice_loss(y_true, y_pred):
+    numerator = 2 * torch.sum(y_true * y_pred)
+    denominator = torch.sum(y_true + y_pred)
+    return 1 - numerator / denominator
+
 
 device = 0
 
@@ -385,6 +341,10 @@ with torch.no_grad():
     eos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.eos_token_id]))["pooler_output"]
     bos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.bos_token_id]))["pooler_output"]
 
+    label_embeddings = lang_model.text_projector(label_embeddings)
+    eos_embedding = lang_model.text_projector(eos_embedding)
+    bos_embedding = lang_model.text_projector(bos_embedding)
+
 label_embeddings.requires_grad_(False)
 eos_embedding.requires_grad_(False)
 bos_embedding.requires_grad_(False)
@@ -396,7 +356,7 @@ reverse_mapping = {v: k for k, v in data.digit_to_object_mapping.items()}
 collate_fn = collate_fn_factory(processor, label_embeddings)
 
 # Create batch data loader
-data_loader = DataLoader(data, batch_size=64, collate_fn=collate_fn, num_workers=4, shuffle=True)
+data_loader = DataLoader(data, batch_size=32, collate_fn=collate_fn, num_workers=4, shuffle=True)
 
 # Initialize the model
 model = AutoSeg(d_reduce=128)
@@ -427,8 +387,9 @@ for param in encoder_params + decoder_params:
 lr_encoder = 1e-4
 lr_decoer = 1e-4
 alpha = 0.08
+beta = 0.12
 temperature = 0.08
-num_epochs = 16
+num_epochs = 100
 
 # Optimizer
 optim = Adam(
@@ -446,11 +407,10 @@ scheduler = CosineAnnealingLR(optim, T_max=len(data_loader), eta_min=1e-6)
 
 # Loss
 mask_objective = nn.BCELoss()
+mask_objective2 = dice_loss
 lang_objective = nn.CrossEntropyLoss()
 
 """## Train"""
-#model.load_state_dict(torch.load("/scratch/t.tovi/autoseg_v0.3"))
-
 label_embeddings = label_embeddings.to(0)
 label_embeddings = F.normalize(label_embeddings, dim=-1)
 
@@ -473,9 +433,10 @@ for _ in range(num_epochs):
         mask_prob = m(mask_logits)
         l1 = mask_objective(mask_prob, masks)
         l2 = alpha * lang_objective(label_logits.permute(0, 2, 1), ids)
+        l3 = beta * mask_objective2(masks, mask_prob)
 
         # Total loss
-        loss = l1 + l2
+        loss = l1 + l2 + l3
 
         loss.backward()
         optim.step()
@@ -483,7 +444,7 @@ for _ in range(num_epochs):
 
         batch_loss += loss.detach().cpu().item()
         batch_l1 += l1.detach().cpu().item()
-        batch_l2 += l2.detach().cpu().item()
+        batch_l2 += l3.detach().cpu().item()
 
         scheduler.step()
 
@@ -497,4 +458,4 @@ for _ in range(num_epochs):
 
 
     print("One training epoch done")
-    torch.save(model.state_dict(), "/scratch/t.tovi/autoseg_v0.3_128")
+    torch.save(model.state_dict(), "/scratch/t.tovi/autoseg_v0.3")
