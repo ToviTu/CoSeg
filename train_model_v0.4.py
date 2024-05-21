@@ -17,7 +17,7 @@ from torchvision import transforms
 import torchvision.transforms.functional as TF
 import os
 import numpy as np
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 import tqdm
@@ -300,7 +300,7 @@ temperature = 0.08
 num_epochs = 100
 
 # Optimizer
-optim = Adam(
+optim = AdamW(
     [
         {'params': param.parameters(), "lr" : lr_encoder}
         for param in encoder_params
@@ -308,10 +308,12 @@ optim = Adam(
     [
         {'params': param.parameters(), "lr" : lr_decoer}
         for param in decoder_params
-    ]
+    ],
+    weight_decay = 1e-4
 )
 
-scheduler = CosineAnnealingLR(optim, T_max=len(data_loader), eta_min=1e-6)
+#scheduler = CosineAnnealingLR(optim, T_max=len(data_loader), eta_min=1e-6)
+scheduler = StepLR(optim, step_size=10, gamma=0.7)
 
 # Loss
 mask_objective = nn.BCELoss()
@@ -342,7 +344,7 @@ for _ in range(num_epochs):
         mask_prob = m(mask_logits)
         l1 = mask_objective(mask_prob, masks)
         l2 = alpha * lang_objective(label_logits.permute(0, 2, 1), ids)
-        l3 = beta * mask_objective2(masks, m(mask_prob))
+        l3 = beta * mask_objective2(masks, mask_prob)
 
 
         # Total loss
@@ -366,6 +368,6 @@ for _ in range(num_epochs):
 
         count += 1
 
-
+    scheduler.step()
     print("One training epoch done")
     torch.save(model.state_dict(), "/scratch/t.tovi/autoseg_v0.4")
