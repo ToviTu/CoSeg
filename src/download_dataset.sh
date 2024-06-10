@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DIR="/scratch/t.tovi/dataset/"
+DIR="/scratch/t.tovi/datasets/"
 
 # Download the datasets
 wget --directory-prefix=$DIR http://images.cocodataset.org/zips/train2017.zip

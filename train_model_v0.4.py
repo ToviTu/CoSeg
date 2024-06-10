@@ -22,6 +22,9 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 import tqdm
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
 """## Dataset"""
 
 src_dir = "/home/research/jianhong.t/OpenVocab_Seg_with_AutoRegres/src/"
@@ -48,7 +51,7 @@ class COCOStuffDataset(Dataset):
             for line in file:
                 key, value = line.strip().split(':')
                 self.digit_to_object_mapping[int(key)] = value.strip()
-        self.digit_to_object_mapping[255] = "unlabled"
+        self.digit_to_object_mapping[255] = "unlabeled"
 
     def center_crop(self, image, mask):
         transform = transforms.CenterCrop(self.img_size)
@@ -134,7 +137,7 @@ class AutoSeg(nn.Module):
                 nn.TransformerEncoderLayer(
                     d_model=d_reduce,
                     nhead=nhead,
-                    dim_feedforward=2048,
+                    dim_feedforward=4 * d_reduce,
                     dropout=0.1,
                     activation=nn.GELU(),
                     batch_first=True,
@@ -234,6 +237,7 @@ data = COCOStuffDataset(
 )
 
 lang_model = CLIPLang_prefix()
+lang_model.eval()
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
 
 # Get loss query table
@@ -246,16 +250,16 @@ label_indices = processor(label_text, padding=True, return_tensors='pt')['input_
 
 with torch.no_grad():
     label_embeddings = lang_model.text_model(label_indices)["pooler_output"]
-    eos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.eos_token_id]))["pooler_output"]
-    bos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.bos_token_id]))["pooler_output"]
+    #eos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.eos_token_id]))["pooler_output"]
+    #bos_embedding = lang_model.text_model(torch.tensor([processor.tokenizer.bos_token_id]))["pooler_output"]
 
     label_embeddings = lang_model.text_projector(label_embeddings)
-    eos_embedding = lang_model.text_projector(eos_embedding)
-    bos_embedding = lang_model.text_projector(bos_embedding)
+    #eos_embedding = lang_model.text_projector(eos_embedding)
+    #bos_embedding = lang_model.text_projector(bos_embedding)
 
 label_embeddings.requires_grad_(False)
-eos_embedding.requires_grad_(False)
-bos_embedding.requires_grad_(False)
+#eos_embedding.requires_grad_(False)
+#bos_embedding.requires_grad_(False)
 
 reverse_mapping = {v: k for k, v in data.digit_to_object_mapping.items()}
 
@@ -295,7 +299,7 @@ for param in encoder_params + decoder_params:
 lr_encoder = 1e-4
 lr_decoer = 1e-4
 alpha = 0.08
-beta = 0.12
+beta = 0.18
 temperature = 0.08
 num_epochs = 100
 
@@ -330,6 +334,8 @@ for _ in range(num_epochs):
     batch_loss = 0
     batch_l1 = 0
     batch_l2 = 0
+    batch_l3 = 0
+
     for batch in data_loader:
         # Prepare data
         pixel_values = batch['pixel_values'].to(device)
@@ -346,7 +352,6 @@ for _ in range(num_epochs):
         l2 = alpha * lang_objective(label_logits.permute(0, 2, 1), ids)
         l3 = beta * mask_objective2(masks, mask_prob)
 
-
         # Total loss
         loss = l1 + l2 + l3
 
@@ -357,14 +362,14 @@ for _ in range(num_epochs):
         batch_loss += loss.detach().cpu().item()
         batch_l1 += l1.detach().cpu().item()
         batch_l2 += l2.detach().cpu().item()
-
-        scheduler.step()
+        batch_l3 += l3.detach().cpu().item()
 
         if (count+1) % 64 == 0:
-            print(f"Avrage batch loss: {batch_loss / 64}, {batch_l1 / 64}, {batch_l2 / 64}")
+            print(f"Avrage batch loss: {batch_loss / 64}, {batch_l1 / 64}, {batch_l2 / 64}, {batch_l3 / 64}")
             batch_loss = 0
             batch_l1 = 0
             batch_l2 = 0
+            batch_l3 = 0
 
         count += 1
 
