@@ -20,3 +20,4 @@ trl
 huggingface_hub
 bitsandbytes
 matplotlib
+ninja
